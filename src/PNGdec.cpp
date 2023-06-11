@@ -200,8 +200,15 @@ int PNG::decode(void *pUser, int iOptions)
 //
 void PNG::getLineAsRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndianness, uint32_t u32Bkgd)
 {
-    PNGRGB565(pDraw, pPixels, iEndianness, u32Bkgd, hasAlpha());
+    PNGRGB565(pDraw, pPixels, 0, pDraw->iWidth, iEndianness, u32Bkgd, u32Bkgd == ~0? PNG_BLEND_NONE: PNG_BLEND_COLOR);
 } /* getLineAsRGB565() */
+//
+// Blend a line of native pixels (all supported formats) into RGB565 target
+//
+void PNG::blendLineAsRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int start, int width, int iEndianness)
+{
+    PNGRGB565(pDraw, pPixels, start, width, iEndianness, 0, PNG_BLEND_TARGET);
+} /* blendLineAsRGB565() */
 
 uint8_t PNG::getAlphaMask(PNGDRAW *pDraw, uint8_t *pMask, uint8_t ucThreshold)
 {

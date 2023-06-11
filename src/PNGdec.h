@@ -180,6 +180,7 @@ class PNG
     void setBuffer(uint8_t *pBuffer);
     uint8_t getAlphaMask(PNGDRAW *pDraw, uint8_t *pMask, uint8_t ucThreshold);
     void getLineAsRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndianness, uint32_t u32Bkgd);
+    void blendLineAsRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int start, int width, int iEndianness);
 
   private:
     PNGIMAGE _png;

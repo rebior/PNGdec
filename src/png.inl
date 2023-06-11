@@ -219,12 +219,40 @@ PNG_STATIC uint8_t PNGMakeMask(PNGDRAW *pDraw, uint8_t *pMask, uint8_t ucThresho
     } // switch on pixel type
     return cHasOpaque; // let the caller know if any pixels are opaque
 } /* PNGMakeMask() */
+
+enum PNG_BLEND_MODE {
+    PNG_BLEND_NONE,
+    PNG_BLEND_COLOR,
+    PNG_BLEND_TARGET
+};
+
+PNG_STATIC uint16_t alphaBlend(uint8_t f_r, uint8_t f_g, uint8_t f_b, uint8_t alpha, uint8_t b_r, uint8_t b_g, uint8_t b_b)
+{
+  // Shift to the correct bit position in RGB565 format
+  uint16_t r = ((f_r * alpha) + (b_r * (255 - alpha)));
+  uint16_t g = ((f_g * alpha) + (b_g * (255 - alpha))) >> 5;
+  uint16_t b = ((f_b * alpha) + (b_b * (255 - alpha))) >> 11;
+
+  // Combine RGB565 colours into 16 bits
+  return (r & 0xF800) | (g & 0x07E0) | (b & 0x001F);
+}
+
+PNG_STATIC uint16_t alphaBlend565(uint8_t f_r, uint8_t f_g, uint8_t f_b, uint8_t alpha, uint16_t b_565)
+{
+  return alphaBlend(f_r, f_g, f_b, alpha, (b_565 >> 8) & 0xF8, (b_565 >> 3) & 0xFC, (b_565 << 3) & 0xF8);
+}
+
+PNG_STATIC uint16_t RGBto565(uint32_t rgb) {
+    return ((rgb & 0xf8) << 8) | ((rgb & 0xfc00) >> 5) | ((rgb & 0xf80000) >> 19);
+}
+
 //
-// Convert a line of native PNG pixels into RGB565
+// Convert a line of native PNG pixels into RGB565 and optionally blend it 
+// to the provided buffer with the alpha value
 // handles all standard pixel types
 // written for simplicity, not necessarily performance
 //
-PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uint32_t u32Bkgd, int iHasAlpha)
+PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int start, int width, int iEndiannes, uint32_t u32Bkgd, PNG_BLEND_MODE blend)
 {
     int x, j;
     uint16_t usPixel, *pDest = pPixels;
@@ -232,7 +260,8 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
     
     switch (pDraw->iPixelType) {
         case PNG_PIXEL_GRAY_ALPHA:
-            for (x=0; x<pDraw->iWidth; x++) {
+            s += start * 2;
+            for (x=0; x<width; x++) {
                 c = *s++; // gray level
                 a = *s++;
                 j = (a * c) >> 8; // multiply by the alpha
@@ -243,7 +272,8 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
             }
             break;
         case PNG_PIXEL_GRAYSCALE:
-            for (x=0; x<pDraw->iWidth; x++) {
+            s += start;
+            for (x=0; x<width; x++) {
                 c = *s++;
                 usPixel = (c >> 3); // blue
                 usPixel |= ((c >> 2) << 5); // green
@@ -254,7 +284,8 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
             }
             break;
         case PNG_PIXEL_TRUECOLOR:
-            for (x=0; x<pDraw->iWidth; x++) {
+            s += start * 3;
+            for (x=0; x<width; x++) {
                 usPixel = (s[2] >> 3); // blue
                 usPixel |= ((s[1] >> 2) << 5); // green
                 usPixel |= ((s[0] >> 3) << 11); // red
@@ -265,10 +296,11 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
             }
             break;
         case PNG_PIXEL_INDEXED: // palette color (can be 1/2/4 or 8 bits per pixel)
+            s += start;
             if (pDraw->pFastPalette && !pDraw->iHasAlpha) { // faster RGB565 palette exists
                switch (pDraw->iBpp) {
                    case 8:
-                       for (x=0; x<pDraw->iWidth; x++) {
+                       for (x=0; x<width; x++) {
                            c = *s++;
                            usPixel = pDraw->pFastPalette[c];
                            if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
@@ -277,7 +309,7 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
                        }
                        break;
                    case 4:
-                       for (x=0; x<pDraw->iWidth; x+=2) {
+                       for (x=0; x<width; x+=2) {
                            c = *s++;
                            usPixel = pDraw->pFastPalette[c >> 4];
                            if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
@@ -290,7 +322,7 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
                        }
                        break;
                    case 2:
-                       for (x=0; x<pDraw->iWidth; x+=4) {
+                       for (x=0; x<width; x+=4) {
                            c = *s++;
                            for (j=0; j<4; j++) { // work on pairs of bits
                                usPixel = pDraw->pFastPalette[c >> 6];
@@ -302,7 +334,7 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
                        }
                        break;
                    case 1:
-                       for (x=0; x<pDraw->iWidth; x+=4) {
+                       for (x=0; x<width; x+=4) {
                            c = *s++;
                            for (j=0; j<8; j++) { // work on pairs of bits
                                usPixel = pDraw->pFastPalette[c >> 7];
@@ -318,21 +350,60 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
             }
             switch (pDraw->iBpp) {
                 case 8: // 8-bit palette also supports palette alpha
-                    if (pDraw->iHasAlpha) { // use the alpha to modify the palette
-                        for (x=0; x<pDraw->iWidth; x++) {
-                            int a;
-                            c = *s++;
-                            a = pDraw->pPalette[768+c]; // get alpha
-                            pPal = &pDraw->pPalette[c * 3];
-                            usPixel = ((pPal[2] * a) >> 11); // blue
-                            usPixel |= (((pPal[1] * a) >> 10) << 5); // green
-                            usPixel |= (((pPal[0] * a) >> 11) << 11); // red
-                            if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
-                                usPixel = __builtin_bswap16(usPixel);
-                            *pDest++ = usPixel;
-                        } // for x
+                    if (pDraw->iHasAlpha && blend != PNG_BLEND_NONE) { // use the alpha to modify the palette
+                        switch (blend) {
+                        case PNG_BLEND_COLOR: // blend with given background color
+                            {
+                            uint8_t b_r, b_g, b_b;
+                            b_r = u32Bkgd & 0xff;
+                            b_g = (u32Bkgd >> 8) & 0xff;
+                            b_b = (u32Bkgd >> 16) & 0xff;
+                            uint16_t u16Bkgd = RGBto565(u32Bkgd);
+                            for (x=0; x<width; x++) {
+                                c = *s++;
+                                a = pDraw->pPalette[768+c]; // get alpha
+                                pPal = &pDraw->pPalette[c * 3];
+                                if (a == 0)
+                                    usPixel = u16Bkgd;
+                                else if (a == 255) { // fully opaque
+                                    usPixel = (pPal[2] >> 3); // blue
+                                    usPixel |= ((pPal[1] >> 2) << 5); // green
+                                    usPixel |= ((pPal[0] >> 3) << 11); // red
+                                } else { // mix the colors
+                                    usPixel = alphaBlend(pPal[0], pPal[1], pPal[2], a, b_r, b_g, b_b);
+                                }
+                                if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
+                                    usPixel = __builtin_bswap16(usPixel);
+                                *pDest++ = usPixel;
+                            } // for x
+                            } break;
+                        case PNG_BLEND_TARGET: // blend with target color
+                            for (x=0; x<width; x++) {
+                                c = *s++;
+                                uint8_t alpha = pDraw->pPalette[768+c]; // get alpha
+                                pPal = &pDraw->pPalette[c * 3];
+                                if (alpha == 0) {
+                                    pDest++;
+                                } else {
+                                    if (alpha == 255) { // fully opaque
+                                        usPixel = (pPal[2] >> 3); // blue
+                                        usPixel |= ((pPal[1] >> 2) << 5); // green
+                                        usPixel |= ((pPal[0] >> 3) << 11); // red
+                                    } else { // mix the colors
+                                        usPixel = *pDest;
+                                        if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
+                                            usPixel = __builtin_bswap16(usPixel);
+                                        usPixel = alphaBlend565(pPal[0], pPal[1], pPal[2], alpha, usPixel);
+                                    }
+                                    if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
+                                        usPixel = __builtin_bswap16(usPixel);
+                                    *pDest++ = usPixel;
+                                }
+                            } // for x
+                            break;
+                        }
                     } else {
-                        for (x=0; x<pDraw->iWidth; x++) {
+                        for (x=0; x<width; x++) {
                             c = *s++;
                             pPal = &pDraw->pPalette[c * 3];
                             usPixel = (pPal[2] >> 3); // blue
@@ -345,7 +416,7 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
                     } // not alpha palette
                     break;
                 case 4:
-                    for (x=0; x<pDraw->iWidth; x+=2) {
+                    for (x=0; x<width; x+=2) {
                         c = *s++;
                         pPal = &pDraw->pPalette[(c >> 4) * 3];
                         usPixel = (pPal[2] >> 3); // blue
@@ -364,7 +435,7 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
                     }
                     break;
                 case 2:
-                    for (x=0; x<pDraw->iWidth; x+=4) {
+                    for (x=0; x<width; x+=4) {
                         c = *s++;
                         for (j=0; j<4; j++) { // work on pairs of bits
                             pPal = &pDraw->pPalette[(c >> 6) * 3];
@@ -379,7 +450,7 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
                     }
                     break;
                 case 1:
-                    for (x=0; x<pDraw->iWidth; x+=4) {
+                    for (x=0; x<width; x+=4) {
                         c = *s++;
                         for (j=0; j<8; j++) { // work on pairs of bits
                             pPal = &pDraw->pPalette[(c >> 7) * 3];
@@ -396,45 +467,66 @@ PNG_STATIC void PNGRGB565(PNGDRAW *pDraw, uint16_t *pPixels, int iEndiannes, uin
             } // switch on bits per pixel
             break;
         case PNG_PIXEL_TRUECOLOR_ALPHA: // truecolor + alpha
-            if (u32Bkgd != 0xffffffff) { // user wants to blend it with a background color
-                uint32_t r, g, b, a;
-                uint32_t b_r, b_g, b_b;
-                b_r = u32Bkgd & 0xff; b_g = (u32Bkgd & 0xff00) >> 8;
-                b_b = (u32Bkgd >> 16) & 0xff;
-                uint16_t u16Clr = (u32Bkgd & 0xf8) << 8;
-                u16Clr |= ((u32Bkgd & 0xfc00) >> 5);
-                u16Clr |= ((u32Bkgd & 0xf80000) >> 19);
-                for (x=0; x<pDraw->iWidth; x++) {
-                    r = s[0]; g = s[1]; b = s[2]; a = s[3];
-                    if (a == 0)
-                        usPixel = u16Clr;
-                    else if (a == 255) { // fully opaque
+            s += start * 4;
+            switch (blend) {
+                case PNG_BLEND_NONE: // ignore alpha
+                    for (x=0; x<width; x++) {
                         usPixel = (s[2] >> 3); // blue
                         usPixel |= ((s[1] >> 2) << 5); // green
                         usPixel |= ((s[0] >> 3) << 11); // red
-                    } else { // mix the colors
-                        r = ((r * a) + (b_r * (255-a))) >> 8;
-                        g = ((g * a) + (b_g * (255-a))) >> 8;
-                        b = ((b * a) + (b_b * (255-a))) >> 8;
-                        usPixel = (b >> 3); // blue
-                        usPixel |= ((g >> 2) << 5); // green
-                        usPixel |= ((r >> 3) << 11); // red
-                    }
-                    if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
-                        usPixel = __builtin_bswap16(usPixel);
-                    *pDest++ = usPixel;
-                    s += 4; // skip alpha
-                }
-            } else { // ignore alpha
-                for (x=0; x<pDraw->iWidth; x++) {
-                    usPixel = (s[2] >> 3); // blue
-                    usPixel |= ((s[1] >> 2) << 5); // green
-                    usPixel |= ((s[0] >> 3) << 11); // red
-                    if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
-                        usPixel = __builtin_bswap16(usPixel);
-                    *pDest++ = usPixel;
-                    s += 4; // skip alpha
-                }
+                        if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
+                            usPixel = __builtin_bswap16(usPixel);
+                        *pDest++ = usPixel;
+                        s += 4; // skip alpha
+                    } // for x
+                    break;
+                case PNG_BLEND_COLOR: // blend with given background color
+                    {
+                        uint8_t b_r, b_g, b_b;
+                        b_r = u32Bkgd & 0xff;
+                        b_g = (u32Bkgd >> 8) & 0xff;
+                        b_b = (u32Bkgd >> 16) & 0xff;
+                        uint16_t u16Bkgd = RGBto565(u32Bkgd);
+                        for (x=0; x<width; x++) {
+                            uint8_t alpha = s[3];
+                            if (alpha == 0)
+                                usPixel = u16Bkgd;
+                            else if (alpha == 255) { // fully opaque
+                                usPixel = (s[2] >> 3); // blue
+                                usPixel |= ((s[1] >> 2) << 5); // green
+                                usPixel |= ((s[0] >> 3) << 11); // red
+                            } else { // mix the colors
+                                usPixel = alphaBlend(s[0], s[1], s[2], alpha, b_r, b_g, b_b);
+                            }
+                            if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
+                                usPixel = __builtin_bswap16(usPixel);
+                            *pDest++ = usPixel;
+                            s += 4; // skip alpha
+                        } // for x
+                    } break;
+                case PNG_BLEND_TARGET: // blend with target color
+                    for (x=0; x<width; x++) {
+                        uint8_t alpha = s[3];
+                        if (alpha == 0) {
+                            pDest++;
+                        } else {
+                            if (alpha == 255) { // fully opaque
+                                usPixel = (s[2] >> 3); // blue
+                                usPixel |= ((s[1] >> 2) << 5); // green
+                                usPixel |= ((s[0] >> 3) << 11); // red
+                            } else { // mix the colors
+                                usPixel = *pDest;
+                                if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
+                                    usPixel = __builtin_bswap16(usPixel);
+                                usPixel = alphaBlend565(s[0], s[1], s[2], alpha, usPixel);
+                            }
+                            if (iEndiannes == PNG_RGB565_BIG_ENDIAN)
+                                usPixel = __builtin_bswap16(usPixel);
+                            *pDest++ = usPixel;
+                        }
+                        s += 4; // skip alpha
+                    } // for x
+                    break;
             }
             break;
     }
